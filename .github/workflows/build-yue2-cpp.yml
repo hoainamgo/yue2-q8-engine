@@ -1,0 +1,175 @@
+# ============================================================================
+# Build engine yue2.cpp (Q8 route cho YuE2) MỘT LẦN trên GitHub Actions,
+# phát hành binary để Colab / Kaggle / máy bất kỳ chỉ tải về chạy
+# (Giải pháp 2 — thay cho build tại chỗ ~22-49 phút trên từng phiên).
+#
+# Recipe bám đúng BUILD_INFO đã proven (Kaggle 2026-10-23/24 + Colab 2026-11-01,
+# kết quả trùng sha256 FLAC giữa hai nền tảng):
+#   - Engine : https://github.com/ServeurpersoCom/yue2.cpp (MIT),
+#              commit ghim 8af01740686824ffd4a1839a457954f42e2a8ce7 (ggml 0.27.0)
+#   - Cờ     : -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 (Tesla T4 = sm_75)
+#              -DCMAKE_BUILD_TYPE=Release
+#   - Target : yue-synth (đã proven trên Colab: build target này là đủ —
+#              các libggml*.so phụ thuộc được build kèm trong thư mục build/)
+#   - Weights: KHÔNG đóng gói ở đây — GGUF lấy từ HuggingFace
+#              Serveurperso/YuE2-GGUF (file model 3,81 GB > giới hạn 2 GB/file
+#              của GitHub Release). Runner scripts/run_yue2_q8.sh tự tải.
+#
+# Chạy: Actions -> "build-yue2-cpp" -> Run workflow (workflow_dispatch),
+#       hoặc push tag engine-v* (tự tạo GitHub Release kèm gói).
+# ============================================================================
+
+name: build-yue2-cpp
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_ref:
+        description: "Commit/ref của ServeurpersoCom/yue2.cpp (để trống = commit đã proven)"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "engine-v*"
+
+# Cần để gh release create tạo Release khi chạy bằng tag.
+permissions:
+  contents: write
+
+env:
+  ENGINE_REPO: "https://github.com/ServeurpersoCom/yue2.cpp"
+  # Commit engine đã proven — trùng BUILD_INFO và driver Colab v1.0.
+  ENGINE_COMMIT: "8af01740686824ffd4a1839a457954f42e2a8ce7"
+  CUDA_VERSION: "12.8"
+  PKG_NAME: "yue2-cpp-linux-x64-cuda12"
+
+jobs:
+  build:
+    # ubuntu-22.04: glibc 2.35 — bản cũ nhất còn được GitHub hỗ trợ, để binary
+    # chạy được trên cả Colab (image Ubuntu 22.04) và Kaggle (image Ubuntu 22.04).
+    # TUYỆT ĐỐI không đổi lên ubuntu-24.04: glibc 2.39 sẽ làm binary không nạp
+    # được trên các image 22.04 (GLIBC_2.3x not found).
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repo này (lấy scripts/link_libs.sh để đóng gói)
+        uses: actions/checkout@v4
+
+      - name: Checkout engine yue2.cpp tại commit đã proven
+        uses: actions/checkout@v4
+        with:
+          repository: ServeurpersoCom/yue2.cpp
+          ref: ${{ inputs.engine_ref || '8af01740686824ffd4a1839a457954f42e2a8ce7' }}
+          submodules: recursive
+          path: yue2.cpp
+
+      # ------------------------------------------------------------------
+      # Cài CUDA Toolkit 12.8 qua repo APT chính thức của NVIDIA.
+      # Lý do chọn APT thay vì action bên thứ ba: lệnh minh bạch, ghim đúng
+      # bản 12.8 (khớp nvcc V12.8.93 của môi trường build proven), không phụ
+      # thuộc tag của action cộng đồng. Build KHÔNG cần GPU: nvcc chỉ biên
+      # dịch device code cho sm_75, runner không có GPU vẫn build được;
+      # lúc LINK, -lcuda được thỏa bằng stub libcuda.so đi kèm toolkit
+      # (gói cuda-driver-dev) — driver thật chỉ cần ở máy CHẠY.
+      # ------------------------------------------------------------------
+      - name: Cài CUDA Toolkit 12.8 (repo APT của NVIDIA)
+        run: |
+          set -euxo pipefail
+          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y cuda-toolkit-12-8
+          /usr/local/cuda-12.8/bin/nvcc --version
+          ls /usr/local/cuda-12.8/lib64/stubs/ || true
+
+      # TODO-VERIFY: gcc mặc định của image ubuntu-22.04 (gcc 11/12) biên dịch
+      # CUDA 12.8 — môi trường proven dùng gcc 13.3. Nếu nvcc báo host compiler
+      # không tương thích, cài thêm gcc-13/g++-13 và truyền
+      # -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13 khi configure.
+
+      - name: Configure (cờ bám BUILD_INFO đã proven)
+        run: |
+          set -euxo pipefail
+          # GGML_NATIVE=OFF: CỐ Ý tắt -march=native. Binary phải chạy trên CPU
+          # của Colab/Kaggle (khác CPU máy build) — để native có nguy cơ dính
+          # instruction set lạ (illegal instruction). Đây là điểm khác DUY NHẤT
+          # so với build proven (build proven không truyền cờ này, mặc định ON
+          # trên CPU Kaggle); phần tính nặng nằm ở backend CUDA nên ảnh hưởng
+          # hiệu năng không đáng kể — nhưng vì khác cờ, khâu nghiệm thu ở
+          # README (so sha256 FLAC) có tiêu chí phụ nếu hash lệch.
+          cmake -S yue2.cpp -B yue2.cpp/build \
+            -DGGML_CUDA=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=75 \
+            -DGGML_NATIVE=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCUDAToolkit_ROOT=/usr/local/cuda \
+            -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
+        # TODO-VERIFY: nếu configure/link báo "CUDA::cuda_driver NOT FOUND"
+        # hoặc "cannot find -lCUDA::cuda_driver" (đúng lỗi đã gặp trên Kaggle),
+        # áp dụng 2 fix đã proven trong BUILD_INFO trước khi configure:
+        #   1) sed thay token CUDA::cuda_driver trong *.txt/*.cmake của repo
+        #      bằng đường dẫn stub: /usr/local/cuda/lib64/stubs/libcuda.so
+        #   2) dựng fake CUDAToolkit_ROOT (cp -rs include/lib64/targets +
+        #      lib64/stubs/libcuda.so) và trỏ -DCUDAToolkit_ROOT vào đó.
+        # Trên runner GitHub (toolkit cài đầy đủ, có quyền ghi) khả năng cao
+        # không cần — nhưng chưa kiểm chứng thực tế nên để ngỏ ở đây.
+
+      - name: Build target yue-synth
+        run: |
+          set -euxo pipefail
+          cmake --build yue2.cpp/build -j --target yue-synth
+          ls -la yue2.cpp/build/yue-synth yue2.cpp/build/libggml*.so*
+
+      - name: Đóng gói (binary + .so + link_libs.sh + BUILD_INFO + SHA256SUMS)
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          cp yue2.cpp/build/yue-synth dist/
+          # cp -a để GIỮ symlink SONAME (libggml.so -> libggml.so.0 ->
+          # libggml.so.0.27.0); loader cần đủ cả 3 tên. link_libs.sh đi kèm
+          # để khôi phục link nếu khâu nào làm rớt symlink.
+          cp -a yue2.cpp/build/libggml*.so* dist/
+          cp scripts/link_libs.sh dist/
+          chmod +x dist/yue-synth dist/link_libs.sh
+          {
+            echo "# YuE2 Q8 Engine — BUILD INFO (GitHub Actions build)"
+            echo ""
+            echo "- Engine: ${ENGINE_REPO}"
+            echo "- Commit: $(git -C yue2.cpp rev-parse HEAD)"
+            echo "- Built: $(date -u +%Y-%m-%dT%H:%M:%SZ) trên GitHub Actions runner ubuntu-22.04"
+            echo "- nvcc: $(/usr/local/cuda/bin/nvcc --version | tail -1)"
+            echo "- Cờ build: -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DGGML_NATIVE=OFF -DCMAKE_BUILD_TYPE=Release"
+            echo "- Target: yue-synth (kèm libggml*.so của ggml 0.27.0)"
+            echo "- Chạy: LD_LIBRARY_PATH=<thư mục này> ./yue-synth --model <YuE2-3B-Q8_0.gguf> --vae <YuE2-Vae-F32.gguf> --request <request.json> --out <out.wav> --score <score.abc> --tokens <tokens.csv>"
+            echo "- Weights (tải riêng từ HF Serveurperso/YuE2-GGUF rev e630f2b8f6aedf8254c3186438633c1b5eeaf80a):"
+            echo "  - YuE2-3B-Q8_0.gguf 3810232064 byte sha256 41121ce97786d7795a325bcf123ca196956c03bb252c9e75384cfc1f2fc19e6b"
+            echo "  - YuE2-Vae-F32.gguf 530497344 byte sha256 93e49dfb1970e89ad64cacb17cf13b5d05f6bb30ef7ed3adae3050bcb728638a"
+          } > dist/BUILD_INFO.md
+          (cd dist && sha256sum yue-synth libggml*.so.0.27.0 BUILD_INFO.md > SHA256SUMS)
+          # Kiểm tra ldd: các libggml phải resolve trong dist; riêng
+          # libcuda.so.1 "not found" trên runner là BÌNH THƯỜNG (không có
+          # driver NVIDIA ở máy build — máy chạy Colab/Kaggle sẽ cấp).
+          LD_LIBRARY_PATH="$PWD/dist" ldd dist/yue-synth || true
+          tar -czf "${PKG_NAME}.tar.gz" -C dist .
+          sha256sum "${PKG_NAME}.tar.gz" > "${PKG_NAME}.tar.gz.sha256"
+          ls -la "${PKG_NAME}.tar.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG_NAME }}
+          path: |
+            ${{ env.PKG_NAME }}.tar.gz
+            ${{ env.PKG_NAME }}.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Tạo GitHub Release (chỉ khi push tag engine-v*)
+        if: startsWith(github.ref, 'refs/tags/engine-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            "${PKG_NAME}.tar.gz" "${PKG_NAME}.tar.gz.sha256" \
+            --title "yue2.cpp engine ${GITHUB_REF_NAME} (linux-x64, CUDA 12, sm_75)" \
+            --notes "Binary yue-synth + libggml (ggml 0.27.0) build từ ServeurpersoCom/yue2.cpp @ ${ENGINE_COMMIT}. Chạy kèm LD_LIBRARY_PATH trỏ vào thư mục giải nén. Weights GGUF tải riêng từ HuggingFace Serveurperso/YuE2-GGUF (không đính kèm vì >2GB/file)."
