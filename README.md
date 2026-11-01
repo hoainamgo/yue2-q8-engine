@@ -122,6 +122,38 @@ phiên/kernel MỚI TINH của từng nền tảng, rồi đối chiếu với b
    nếu configure/link dính lỗi tương tự thì áp dụng nguyên văn theo BUILD_INFO
    (đã ghi sẵn trong workflow dạng comment).
 
+## Nhật ký thực thi (2026-11-01)
+
+Repo đã tạo: **https://github.com/hoainamgo/yue2-q8-engine** (public, chỉ chứa
+code: `.github/`, `scripts/`, `README.md`, `.gitignore` —
+`request_millroad.json` + `score_fed.abc` được giữ local bằng `.gitignore`,
+không đưa lên repo công khai).
+
+**Cả 3 lần chạy workflow đều bị chấm dứt từ bên ngoài ở bước Build** — không
+phải lỗi code/workflow (Configure xanh, biên dịch đi tới 95%, đang biên dịch
+`ggml-cuda`):
+
+| Run | Bắt đầu build (UTC) | Bị ngắt (UTC) | Sau | Tiến độ |
+|---|---|---|---|---|
+| 41294175664 | 09:44:35 | 09:45:26 | ~51s | 95% |
+| 41294563095 | 09:51:31 | 09:52:42 | ~71s | 95% |
+| 41295053355 | 09:58:22 | 09:59:34 | ~72s | 95% |
+
+Dấu hiệu giống hệt nhau cả 3 lần: log ghi `The runner has received a shutdown
+signal` + `Process completed with exit code 143` (SIGTERM gửi cho runner),
+không có một lỗi biên dịch nào trước đó. Tính đều đặn (ngắt trong ~1 phút đầu
+của pha biên dịch nặng, 3/3 lần) cho thấy đây là **chấm dứt tự động từ phía
+nền tảng/giám sát**, không phải hạ tầng lỗi ngẫu nhiên và không phải lỗi của
+workflow. Đã DỪNG thử tiếp và không lách sang cơ chế khác (không upload binary
+build sẵn thay thế, không đổi tên workflow/tách build) — chờ quyết định của
+Noah: hoặc anh tự bấm chạy workflow từ giao diện GitHub của mình, hoặc bỏ
+route GitHub Actions này.
+
+Hệ quả: chưa có Release, nên các bước kiểm chứng Colab/Kaggle bằng binary
+GitHub và đóng gói notebook v1.1 **chưa thực hiện được ở lượt này**. Mọi tài
+sản (workflow, runner, request nghiệm thu) đã sẵn sàng; chỉ cần MỘT lần build
+xanh là đi tiếp được ngay từ bước phát hành.
+
 ## Bản quyền
 
 Engine yue2.cpp = MIT. Weights YuE2 = CC BY-NC 4.0 + Individual Creator
